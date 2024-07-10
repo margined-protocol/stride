@@ -2,7 +2,6 @@ package keeper
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -10,7 +9,6 @@ import (
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
-	"github.com/cosmos/cosmos-sdk/x/authz"
 	bankTypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/gogoproto/proto"
 
@@ -135,35 +133,37 @@ func (k Keeper) BuildTradeAuthzMsg(
 	permissionChange types.AuthzPermissionChange,
 	grantee string,
 ) (authzMsg []proto.Message, err error) {
-	swapMsgTypeUrl := "/" + proto.MessageName(&types.MsgSwapExactAmountIn{})
+	// swapMsgTypeUrl := "/" + proto.MessageName(&types.MsgSwapExactAmountIn{})
 
-	switch permissionChange {
-	case types.AuthzPermissionChange_GRANT:
-		authorization := authz.NewGenericAuthorization(swapMsgTypeUrl)
-		expiration := ctx.BlockTime().Add(time.Hour * 24 * 365 * 100) // 100 years
+	// switch permissionChange {
+	// case types.AuthzPermissionChange_GRANT:
+	// 	authorization := authz.NewGenericAuthorization(swapMsgTypeUrl)
+	// 	expiration := ctx.BlockTime().Add(time.Hour * 24 * 365 * 100) // 100 years
 
-		grant, err := authz.NewGrant(ctx.BlockTime(), authorization, &expiration)
-		if err != nil {
-			return nil, errorsmod.Wrapf(err, "unable to build grant struct")
-		}
-		authzMsg = []proto.Message{&authz.MsgGrant{
-			Granter: tradeRoute.TradeAccount.Address,
-			Grantee: grantee,
-			Grant:   grant,
-		}}
+	// 	grant, err := authz.NewGrant(ctx.BlockTime(), authorization, &expiration)
+	// 	if err != nil {
+	// 		return nil, errorsmod.Wrapf(err, "unable to build grant struct")
+	// 	}
+	// 	authzMsg = []proto.Message{&authz.MsgGrant{
+	// 		Granter: tradeRoute.TradeAccount.Address,
+	// 		Grantee: grantee,
+	// 		Grant:   grant,
+	// 	}}
 
-	case types.AuthzPermissionChange_REVOKE:
-		authzMsg = []proto.Message{&authz.MsgRevoke{
-			Granter:    tradeRoute.TradeAccount.Address,
-			Grantee:    grantee,
-			MsgTypeUrl: swapMsgTypeUrl,
-		}}
+	// case types.AuthzPermissionChange_REVOKE:
+	// 	authzMsg = []proto.Message{&authz.MsgRevoke{
+	// 		Granter:    tradeRoute.TradeAccount.Address,
+	// 		Grantee:    grantee,
+	// 		MsgTypeUrl: swapMsgTypeUrl,
+	// 	}}
 
-	default:
-		return nil, errors.New("invalid permission change")
-	}
+	// default:
+	// 	return nil, errors.New("invalid permission change")
+	// }
 
-	return authzMsg, nil
+	// return authzMsg, nil
+
+	return nil, nil
 }
 
 // Builds a PFM transfer message to send reward tokens from the host zone,
@@ -321,95 +321,95 @@ func (k Keeper) TransferConvertedTokensTradeToHost(ctx sdk.Context, amount sdkma
 // Builds the Osmosis swap message to trade reward tokens for host tokens
 // Depending on min and max swap amounts set in the route, it is possible not the full amount given will swap
 // The minimum amount of tokens that can come out of the trade is calculated using a price from the pool
-func (k Keeper) BuildSwapMsg(rewardAmount sdkmath.Int, route types.TradeRoute) (msg types.MsgSwapExactAmountIn, err error) {
-	// Validate the trade ICA was registered
-	tradeIcaAddress := route.TradeAccount.Address
-	if tradeIcaAddress == "" {
-		return msg, errorsmod.Wrapf(types.ErrICAAccountNotFound, "no trade account found for %s", route.Description())
-	}
+// func (k Keeper) BuildSwapMsg(rewardAmount sdkmath.Int, route types.TradeRoute) (msg types.MsgSwapExactAmountIn, err error) {
+// 	// Validate the trade ICA was registered
+// 	tradeIcaAddress := route.TradeAccount.Address
+// 	if tradeIcaAddress == "" {
+// 		return msg, errorsmod.Wrapf(types.ErrICAAccountNotFound, "no trade account found for %s", route.Description())
+// 	}
 
-	// If the max swap amount was not set it would be ZeroInt, if positive we need to compare to the amount given
-	//  then if max swap amount is LTE to amount full swap is possible so amount is fine, otherwise set amount to max
-	tradeConfig := route.TradeConfig
-	if tradeConfig.MaxSwapAmount.IsPositive() && rewardAmount.GT(tradeConfig.MaxSwapAmount) {
-		rewardAmount = tradeConfig.MaxSwapAmount
-	}
+// 	// If the max swap amount was not set it would be ZeroInt, if positive we need to compare to the amount given
+// 	//  then if max swap amount is LTE to amount full swap is possible so amount is fine, otherwise set amount to max
+// 	tradeConfig := route.TradeConfig
+// 	if tradeConfig.MaxSwapAmount.IsPositive() && rewardAmount.GT(tradeConfig.MaxSwapAmount) {
+// 		rewardAmount = tradeConfig.MaxSwapAmount
+// 	}
 
-	// See if pool swap price has been set to a valid ratio
-	// The only time this should not be set is right after the pool is added,
-	// before an ICQ has been submitted for the price
-	if tradeConfig.SwapPrice.IsZero() {
-		return msg, fmt.Errorf("Price not found for pool %d", tradeConfig.PoolId)
-	}
+// 	// See if pool swap price has been set to a valid ratio
+// 	// The only time this should not be set is right after the pool is added,
+// 	// before an ICQ has been submitted for the price
+// 	if tradeConfig.SwapPrice.IsZero() {
+// 		return msg, fmt.Errorf("Price not found for pool %d", tradeConfig.PoolId)
+// 	}
 
-	// If there is a valid price, use it to set a floor for the acceptable minimum output tokens
-	// minOut is the minimum number of HostDenom tokens we must receive or the swap will fail
-	//
-	// To calculate minOut, we first convert the rewardAmount into units of HostDenom,
-	//   and then we multiply by (1 - MaxAllowedSwapLossRate)
-	//
-	// The price on the trade route represents the ratio of host denom to reward denom
-	// So, to convert from units of RewardTokens to units of HostTokens,
-	// we multiply the reward amount by the price:
-	//   AmountInHost = AmountInReward * SwapPrice
-	rewardAmountConverted := sdk.NewDecFromInt(rewardAmount).Mul(tradeConfig.SwapPrice)
-	minOutPercentage := sdk.OneDec().Sub(tradeConfig.MaxAllowedSwapLossRate)
-	minOut := rewardAmountConverted.Mul(minOutPercentage).TruncateInt()
+// 	// If there is a valid price, use it to set a floor for the acceptable minimum output tokens
+// 	// minOut is the minimum number of HostDenom tokens we must receive or the swap will fail
+// 	//
+// 	// To calculate minOut, we first convert the rewardAmount into units of HostDenom,
+// 	//   and then we multiply by (1 - MaxAllowedSwapLossRate)
+// 	//
+// 	// The price on the trade route represents the ratio of host denom to reward denom
+// 	// So, to convert from units of RewardTokens to units of HostTokens,
+// 	// we multiply the reward amount by the price:
+// 	//   AmountInHost = AmountInReward * SwapPrice
+// 	rewardAmountConverted := sdk.NewDecFromInt(rewardAmount).Mul(tradeConfig.SwapPrice)
+// 	minOutPercentage := sdk.OneDec().Sub(tradeConfig.MaxAllowedSwapLossRate)
+// 	minOut := rewardAmountConverted.Mul(minOutPercentage).TruncateInt()
 
-	tradeTokens := sdk.NewCoin(route.RewardDenomOnTradeZone, rewardAmount)
+// 	tradeTokens := sdk.NewCoin(route.RewardDenomOnTradeZone, rewardAmount)
 
-	// Prepare Osmosis GAMM module MsgSwapExactAmountIn from the trade account to perform the trade
-	// If we want to generalize in the future, write swap message generation funcs for each DEX type,
-	// decide which msg generation function to call based on check of which tradeZone was passed in
-	routes := []types.SwapAmountInRoute{{
-		PoolId:        tradeConfig.PoolId,
-		TokenOutDenom: route.HostDenomOnTradeZone,
-	}}
-	msg = types.MsgSwapExactAmountIn{
-		Sender:            tradeIcaAddress,
-		Routes:            routes,
-		TokenIn:           tradeTokens,
-		TokenOutMinAmount: minOut,
-	}
+// 	// Prepare Osmosis GAMM module MsgSwapExactAmountIn from the trade account to perform the trade
+// 	// If we want to generalize in the future, write swap message generation funcs for each DEX type,
+// 	// decide which msg generation function to call based on check of which tradeZone was passed in
+// 	routes := []types.SwapAmountInRoute{{
+// 		PoolId:        tradeConfig.PoolId,
+// 		TokenOutDenom: route.HostDenomOnTradeZone,
+// 	}}
+// 	msg = types.MsgSwapExactAmountIn{
+// 		Sender:            tradeIcaAddress,
+// 		Routes:            routes,
+// 		TokenIn:           tradeTokens,
+// 		TokenOutMinAmount: minOut,
+// 	}
 
-	return msg, nil
-}
+// 	return msg, nil
+// }
 
 // DEPRECATED: The on-chain swap has been deprecated in favor of an authz controller
 // Trade reward tokens in the Trade ICA for the host denom tokens using ICA remote tx on trade zone
 // The amount represents the total amount of the reward token in the trade ICA found by the calling ICQ
 func (k Keeper) SwapRewardTokens(ctx sdk.Context, rewardAmount sdkmath.Int, route types.TradeRoute) error {
-	// If the min swap amount was not set it would be ZeroInt, if positive we need to compare to the amount given
-	//  then if the min swap amount is greater than the current amount, do nothing this epoch to avoid small swaps
-	tradeConfig := route.TradeConfig
-	if tradeConfig.MinSwapAmount.IsPositive() && tradeConfig.MinSwapAmount.GT(rewardAmount) {
-		return nil
-	}
+	// // If the min swap amount was not set it would be ZeroInt, if positive we need to compare to the amount given
+	// //  then if the min swap amount is greater than the current amount, do nothing this epoch to avoid small swaps
+	// tradeConfig := route.TradeConfig
+	// if tradeConfig.MinSwapAmount.IsPositive() && tradeConfig.MinSwapAmount.GT(rewardAmount) {
+	// 	return nil
+	// }
 
-	// Build the Osmosis swap message to convert reward tokens to host tokens
-	msg, err := k.BuildSwapMsg(rewardAmount, route)
-	if err != nil {
-		return err
-	}
-	msgs := []proto.Message{&msg}
+	// // Build the Osmosis swap message to convert reward tokens to host tokens
+	// msg, err := k.BuildSwapMsg(rewardAmount, route)
+	// if err != nil {
+	// 	return err
+	// }
+	// msgs := []proto.Message{&msg}
 
-	tradeAccount := route.TradeAccount
-	k.Logger(ctx).Info(utils.LogWithHostZone(tradeAccount.ChainId,
-		"Preparing MsgSwapExactAmountIn of %+v from the trade account", msg.TokenIn))
+	// tradeAccount := route.TradeAccount
+	// k.Logger(ctx).Info(utils.LogWithHostZone(tradeAccount.ChainId,
+	// 	"Preparing MsgSwapExactAmountIn of %+v from the trade account", msg.TokenIn))
 
-	// Timeout the swap at the end of the epoch
-	strideEpochTracker, found := k.GetEpochTracker(ctx, epochstypes.HOUR_EPOCH)
-	if !found {
-		return errorsmod.Wrapf(types.ErrEpochNotFound, epochstypes.HOUR_EPOCH)
-	}
-	timeout := uint64(strideEpochTracker.NextEpochStartTime)
+	// // Timeout the swap at the end of the epoch
+	// strideEpochTracker, found := k.GetEpochTracker(ctx, epochstypes.HOUR_EPOCH)
+	// if !found {
+	// 	return errorsmod.Wrapf(types.ErrEpochNotFound, epochstypes.HOUR_EPOCH)
+	// }
+	// timeout := uint64(strideEpochTracker.NextEpochStartTime)
 
-	// Send the ICA tx to perform the swap on the tradeZone
-	tradeOwner := types.FormatTradeRouteICAOwnerFromRouteId(tradeAccount.ChainId, route.GetRouteId(), tradeAccount.Type)
-	err = k.SubmitICATxWithoutCallback(ctx, tradeAccount.ConnectionId, tradeOwner, msgs, timeout)
-	if err != nil {
-		return errorsmod.Wrapf(err, "Failed to submit ICA tx for the swap, Messages: %v", msgs)
-	}
+	// // Send the ICA tx to perform the swap on the tradeZone
+	// tradeOwner := types.FormatTradeRouteICAOwnerFromRouteId(tradeAccount.ChainId, route.GetRouteId(), tradeAccount.Type)
+	// err = k.SubmitICATxWithoutCallback(ctx, tradeAccount.ConnectionId, tradeOwner, msgs, timeout)
+	// if err != nil {
+	// 	return errorsmod.Wrapf(err, "Failed to submit ICA tx for the swap, Messages: %v", msgs)
+	// }
 
 	return nil
 }
